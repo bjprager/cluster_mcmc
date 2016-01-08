@@ -135,16 +135,6 @@ def log_jerk_neigh_fnc(theta,r,j_measured,jerk_mass_grid,jerk_rc_grid,neigh_jerk
 
     return log_neigh
 
-    # Get the portion from the normal distribution leftover from the mean field
-    #dj_mf      = j_measured-np.exp(mu)
-    #vdisp      = np.sqrt(9.31e-11*rho_c)*rc
-    #mf_sigma   = 2.79e-10*rho_c*vdisp
-    #mf_var_div = (1/mf_sigma**2)
-    #mf_exp     = dj_mf*dj_mf*mf_var_div
-    #log_mf     = -.5*np.sum(mf_exp-np.log(mf_var_div))
-
-    #return log_neigh+log_mf
-
 def log_likelihood(theta,args):
     """ Calculate the likelihood of our distributions. """
 
