@@ -51,17 +51,57 @@ def log_l_pos_fnc(theta,rp_l_2,r,rc_grid,alpha_grid,lookup):
     else:
         return -np.inf
 
-def model_accel_fnc(theta,r,l_values):
+def bh_influence(theta,bh_ind):
+    """
+    Calculate the radius of influence and tidal radius for a central black hole.
+    The tidal radius is calculated for a solar mass and solar radius star. 
+    """
+
+    rho_c       = theta[0]
+    r_c         = theta[1] 
+    M_bh        = theta[bh_ind]
+    numerator   = 3*M_bh
+    denominator = 8*np.pi*rho_c*r_c*r_c
+    r_influence = numerator/denominator
+    r_tidal     = .057*(M_bh**(0.33))                       # Coefficient is taken from Eqn 1 Baumgardt 2004 for a solar mass solar radius star.
+
+    return r_tidal,r_influence
+
+def rho_at_r_influence(rho_c, r_tidal, r_influence):
+    """ Find the density at the boundary of the BHs influence. """
+
+    normalization = rho_c*(r_tidal**(1.75))
+    return normalization,normalization*(r_influence**(-1.75))
+
+def model_accel_fnc(theta,r,l_values,jflag,bhflag):
     """
     Return the model acceleration.
     Note: This is the slowest part of the code. The hypergeometric function is slow.
     """
 
-    rho_prefac   = -2.79e-10*theta[0]
-    r_rc         = r/theta[1]
-    alpha        = theta[2]
+    rho_c = theta[0]
+    rc    = theta[1]
+    alpha = theta[2]
+    r_rc  = r/rc
 
-    return rho_prefac*HYP2F1(1.5,.5*alpha,2.5,-r_rc**2)*l_values
+    if not bhflag:
+        return -2.79e-10*rho_c*HYP2F1(1.5,.5*alpha,2.5,-r_rc**2)*l_values
+    else:
+        if jflag:
+           bh_ind = 4
+        else:
+           bh_ind = 3
+
+        rho_c                = theta[0]
+        r_tidal, r_influence = bh_influence(theta,bh_ind)
+        r_influence_rc       = r_influence/rc
+        norm, rho_c_king     = rho_at_r_influence(rho_c,r_tidal, r_influence)
+        accel                = np.zeros(r.size)
+        inds_king            = (r>r_influence)
+        inds_bh              = np.invert(inds_king)
+        accel[inds_king]     = -(6.71e-10**norm*(r_influence-r_tidal)**(1.25)+2.79e-10*rho_c_king*(HYP2F1(1.5,.5*alpha,2.5,-r_rc[inds_king]**2)-HYP2F1(1.5,.5*alpha,2.5,-r_influence_rc**2)))
+        accel[inds_bh]       = -6.71e-10**norm*(r[inds_bh]-r_tidal)**(1.25)
+        return accel*l_values
 
 def log_likelihood_accel_pbdot_fnc(y_model,y_measured,y_measured_var_div):
     """ Return the log likelihood values for a normal distribution of accelerations around a model for the binary systems with a measured PBDOT. """
@@ -91,7 +131,7 @@ def density_at_r(rho_c,r_rc,alpha):
     """ Return the density at a given location in the cluster. """
     return rho_c*(1+r_rc**2)**(-0.5*alpha)
 
-def log_jerk_mf_fnc(theta,r,vmin_ind,vmax_ind,j_measured,j_measured_var_div):
+def log_jerk_mf_fnc(theta,r,vmin_ind,vmax_ind,j_measured,j_measured_var_div,bhflag):
     """ Find the approximate jerk from the mean field. """
 
     # Unpact values
@@ -100,7 +140,17 @@ def log_jerk_mf_fnc(theta,r,vmin_ind,vmax_ind,j_measured,j_measured_var_div):
     alpha = theta[2]
 
     # Get the density at each pulsar
-    rho_psr = density_at_r(rho_c,r_rc,alpha)
+    if not bhflag:
+        rho_psr = density_at_r(rho_c,r_rc,alpha)
+    else:
+        bh_ind               = 4
+        rho_psr              = np.zeros(r.size)
+        r_tidal, r_influence = bh_influence(theta)
+        inds_king            = (r>r_influence)
+        inds_bh              = np.invert(inds_king)
+        norm, rho_c_king     = rho_at_r_influence(r_tidal, r_influence)
+        rho_psr[inds_king]   = density_at_r(rho_c_king,r_rc[inds_king],alpha)
+        rho_psr[inds_bh]     = norm*r[inds+bh]**(-1.75)
 
     # Get the predicted mean field jerk
     j_mf = 2.79e-10*rho_psr*theta[vmin_ind:vmax_ind]
@@ -160,18 +210,19 @@ def log_likelihood(theta,args):
     vmin_ind           = args[18]
     vmax_ind           = args[19]
     jflag              = args[20]
+    bhflag             = args[21]
 
     # Calculate values
     l_values       = theta[zmin_ind:zmax_ind]
     rp_l_2         = rperp*rperp+l_values*l_values
     r              = np.sqrt(rp_l_2)
-    accels         = model_accel_fnc(theta,r,l_values)
+    accels         = model_accel_fnc(theta,r,l_values,jflag,bhflag)
     log_pbdot      = log_likelihood_accel_pbdot_fnc(accels[PBDOT_INDS],y_measured[PBDOT_INDS],y_measured_var_div[PBDOT_INDS])
     log_iso        = log_likelihood_accel_iso_fnc(accels[ISO_INDS],y_measured[ISO_INDS],P0)
     log_l_pos      = log_l_pos_fnc(theta,rp_l_2,r,rc_grid,alpha_grid,lookup)
 
     if jflag:
-        j_mf     = log_jerk_mf_fnc(theta,r[J_INDS],vmin_ind,vmax_ind,j_measured,j_measured_var_div)
+        j_mf     = log_jerk_mf_fnc(theta,r[J_INDS],vmin_ind,vmax_ind,j_measured,j_measured_var_div,bhflag)
         log_jerk = log_jerk_neigh_fnc(theta,r[J_INDS],np.fabs(j_measured-j_mf),jerk_mass_grid,jerk_rc_grid,neigh_jerk_lookup)
     else:
         log_jerk = 0
@@ -181,6 +232,6 @@ def log_likelihood(theta,args):
 def log_prior(theta,args):
 
     # Unpack values
-    lb = args[21]
-    ub = args[22]
+    lb = args[22]
+    ub = args[23]
     return log_prior_fnc(theta,lb,ub)
