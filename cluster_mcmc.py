@@ -29,7 +29,7 @@ def optlist(option, opt, value, parser):
     """
     Split up option parser values into a list of floats.
     """
-    setattr(parser.values, option.dest, N.asarray([float(x) for x in value.split(',')]))
+    setattr(parser.values, option.dest, np.asarray([float(x) for x in value.split(',')]))
 
 class massagedata:
 
@@ -186,17 +186,32 @@ class mcmc_fit:
         self.bmin    = options.bmin
         self.bmax    = options.bmax
 
+        # Figure out the output directory
+        directory_tree   = self.options.outfile.split('/')[:-1]
+        self.outfilename = self.options.outfile.split('/')[-1]
+        if len(directory_tree) == 0:
+            self.outdir = './'
+        else:
+            self.outdir  = '/'.join(directory_tree)+'/'
+
         # Initial Conditions
         self.theta_init     = np.copy(options.theta_init)
         self.theta_init[0]  = (self.theta_init[0]*units.solMass/units.pc**3).decompose().value
         self.theta_init[1] *= const.pc.value
         self.theta_init[3] *= const.M_sun.value
+        self.theta_init[4] *= const.M_sun.value
 
-        if options.jerkflag:
+        if options.bhflag and options.jerkflag:
+            self.nparam = 5
+        elif options.jerkflag and not options.bhflag:
             self.nparam = 4
+            self.theta_init = self.theta_init[:self.nparam]
+        elif options.bhflag and not options.jerkflag:
+            self.nparam = 4
+            self.theta_init = self.theta_init[[0,1,2,4]]
         else:
             self.nparam     = 3
-            self.theta_init = self.theta_init[:-1]
+            self.theta_init = self.theta_init[:self.nparam]
 
         # Define the indices bounding nuisance parameters to make grabbing things easy
         self.PBDOT_INDS = (self.params.ACCEL_BINARY.value!=0)
@@ -372,63 +387,26 @@ class mcmc_fit:
 
         return b_guesses
 
-    def plot_starting_posn(self,starting_guesses):
-        """ Plot histogram of starting positions for some sanity checks. """
-
-        #### Plot the histogram of starting positions
-        dpi     = 100
-        width   = 600/dpi
-        height  = 600/dpi
-        fig     = PLT.figure(figsize=(width,height),dpi=dpi)
-        gs      = gridspec.GridSpec(12,1)
-        gs_yind = 4
-        data    = np.load('ratio.npy')
-        data    = data[1:]
-        intersection_ratio_2 = np.interp(2,data[:,1],data[:,0])
-
-        # Main body of the plot
-        ax1   = fig.add_subplot(gs[gs_yind:,0])
-        posns = np.unique(np.sqrt(starting_guesses[:,:,self.zmin_ind:self.zmax_ind]**2+self.rperp**2))/self.theta_init[1]
-        pbin  = np.logspace(np.log10(np.amin(posns)),np.log10(np.amax(posns)),50)
-        ax1.hist(posns,bins=pbin,facecolor='k',alpha=.5)
-        ax1.vlines(intersection_ratio_2,ax1.get_ylim()[0],ax1.get_ylim()[1],color='r',linestyle='--')
-        ax1.set_xscale('log')
-        ax1.set_xlabel(r'$\frac{|r|}{r_c}$',fontsize=18)
-        ax1.set_ylabel(r'Counts',fontsize=18)
-
-        # Plot the top plot with ratios
-        ax2  = fig.add_subplot(gs[:gs_yind,0],sharex=ax1)
-
-        for idx in range(data.shape[1]-1):
-            ax2.plot(data[:,0],data[:,idx+1])
-
-        ax2.hlines(2,1e-1,1e2,color='r',linestyle='--')
-        ax2.vlines(intersection_ratio_2,ax2.get_ylim()[0],ax2.get_ylim()[1],color='r',linestyle='--')
-        ax2.set_xlim([2e-1,1e2])
-        ax2.set_yticks([1,3,5,7])
-        ax2.set_ylabel(r'$\frac{v_{\rm pred}}{v_{\rm meas}}$', fontsize=20)
-        PLT.setp(ax2.get_xticklabels(), visible=False)
-
-        fig.tight_layout()
-        PLT.savefig('starting_posn_dist.png')
-
     def make_prior_array(self,l_signs):
 
         # Out a better way to handle priors quickly
-        lb = np.array([5e-15,0,1,self.Mtot_min*const.M_sun.value])
-        ub = np.array([5e-13,self.rc_max,8,self.Mtot_max*const.M_sun.value])
+        lb = np.array([1e-4*self.theta_init[0],0,1,self.Mtot_min*const.M_sun.value,self.options.bhmin*const.M_sun.value])
+        ub = np.array([1e4*self.theta_init[0],self.rc_max,8,self.Mtot_max*const.M_sun.value,self.options.bhmax*const.M_sun.value])
 
-        if not self.options.jerkflag:
-            lb = lb[:-1]
-            ub = ub[:-1]
+        if self.options.bhflag and not self.options.jerkflag:
+            lb = lb[[0,1,2,4]]
+            ub = ub[[0,1,2,4]]
+        else:
+            lb = lb[:self.nparam]
+            ub = ub[:self.nparam]
 
         for idx in range(l_signs.size):
             if l_signs[idx] == 1:
-                lb = np.append(lb,0)
+                lb = np.append(lb,-np.inf)
                 ub = np.append(ub,np.inf)
             else:
                 lb = np.append(lb,-np.inf)
-                ub = np.append(ub,0)
+                ub = np.append(ub,np.inf)
 
         for idx in range(l_signs[self.ISO_INDS].size):
             lb = np.append(lb,self.bmin)
@@ -436,8 +414,8 @@ class mcmc_fit:
 
         if self.options.jerkflag:
             for idx in range(l_signs[self.J_INDS].size):
-                lb = np.append(lb,-50000)
-                ub = np.append(ub,50000)
+                lb = np.append(lb,-100000)
+                ub = np.append(ub,100000)
 
         return lb,ub
 
@@ -473,34 +451,26 @@ class mcmc_fit:
         lb,ub = self.make_prior_array(l_signs)
 
         # Initial guesses for walkers
-        if os.path.exists('starting.guesses.npy'):
-            starting_guesses = np.load('starting.guesses.npy')
-        else:
-            np.random.seed(0)
-            starting_guesses = np.zeros((ntemps,nwalkers,self.ndim))
-            for ii in range(ntemps):
-                starting_guesses[ii,:,:self.nparam]                = np.random.normal(self.theta_init, .1*self.theta_init, (nwalkers,self.nparam))
-                starting_guesses[ii,:,self.zmin_ind:self.zmax_ind] = np.random.normal(l_guesses, l_guesses_scale, (nwalkers,self.rsize))
-                starting_guesses[ii,:,self.bmin_ind:self.bmax_ind] = self.bfield_dist(np.log10(self.bmin),np.log10(self.bmax),shape=(nwalkers,self.isosize))*1e8
+        np.random.seed(0)
+        starting_guesses = np.zeros((ntemps,nwalkers,self.ndim))
+        for ii in range(ntemps):
+            starting_guesses[ii,:,:self.nparam]                = np.random.normal(self.theta_init, .1*self.theta_init, (nwalkers,self.nparam))
+            starting_guesses[ii,:,self.zmin_ind:self.zmax_ind] = np.random.normal(l_guesses, l_guesses_scale, (nwalkers,self.rsize))
+            starting_guesses[ii,:,self.bmin_ind:self.bmax_ind] = self.bfield_dist(np.log10(self.bmin),np.log10(self.bmax),shape=(nwalkers,self.isosize))*1e8
 
-                # Get the initial velocity guesses if needed
-                if self.options.jerkflag:
-                    v_inits  = np.sqrt(4*np.pi*const.G.value*starting_guesses[ii,:,0]/3.)*starting_guesses[ii,:,1]
-                    v_inits  = np.repeat(v_inits,self.jsize).reshape(-1,self.jsize)
-                    j_signs  = np.sign(j_measured)
-                    v_inits *= j_signs
-                    v_inits  = np.random.normal(v_inits,.05*np.fabs(v_inits))
-                    starting_guesses[ii,:,self.vmin_ind:self.vmax_ind] = v_inits
-
-            np.save('starting.guesses.npy',starting_guesses)
-
-            # Plot distribution of starting positions
-            self.plot_starting_posn(starting_guesses)
+            # Get the initial velocity guesses if needed
+            if self.options.jerkflag:
+                v_inits  = np.sqrt(4*np.pi*const.G.value*starting_guesses[ii,:,0]/3.)*starting_guesses[ii,:,1]
+                v_inits  = np.repeat(v_inits,self.jsize).reshape(-1,self.jsize)
+                j_signs  = np.sign(j_measured)
+                v_inits *= j_signs
+                v_inits  = np.random.normal(v_inits,.05*np.fabs(v_inits))
+                starting_guesses[ii,:,self.vmin_ind:self.vmax_ind] = v_inits
 
         # Make the argument list to pass to the MCMC handler
         args = [self.rperp,P0,y_measured,y_measured_var_div,j_measured,j_measured_var_div,self.zmin_ind,self.zmax_ind \
                 ,self.ISO_INDS,self.PBDOT_INDS,self.rc_grid,self.alpha_grid,self.lookup,l_signs,self.J_INDS \
-                ,self.jerk_mass_grid,self.jerk_rc_grid,self.neigh_jerk_lookup,self.vmin_ind,self.vmax_ind,self.options.jerkflag,lb,ub]
+                ,self.jerk_mass_grid,self.jerk_rc_grid,self.neigh_jerk_lookup,self.vmin_ind,self.vmax_ind,self.options.jerkflag,self.options.bhflag,lb,ub]
 
         # Sample the distribution
         try:
@@ -520,14 +490,14 @@ class mcmc_fit:
             print "Starting Guess array dimensions do not match input. Please delete this file and rerun the script to generate new starting positions"
             exit()
 
-        for p, lnprob, lnlike in sampler.sample(p, lnprob0=lnprob, lnlike0=lnlike, iterations=nsteps, thin=nthin):
+        for p, lnprob, lnlike in sampler.sample(p, lnprob0=lnprob, lnlike0=lnlike, iterations=nsteps):
             pass
 
         # Save the array
         np.save(self.options.outfile, sampler.chain)
-        np.save('chain.p.npy',p)
-        np.save('chain.lbprob.npy',lnprob)
-        np.save('chain.lnlike.npy',lnlike)
+        np.save('%schain.p.npy' %(self.outdir),p)
+        np.save('%schain.lbprob.npy' %(self.outdir),lnprob)
+        np.save('%schain.lnlike.npy' %(self.outdir),lnlike)
 
     #################################
     ####### Plotting Routines #######
@@ -553,23 +523,34 @@ class mcmc_fit:
         nsteps     = self.options.nchain
         nburn      = self.options.nburn
         glide      = self.options.nglide
-        label      = [r'$10^6\rho_c (M_\odot pc^{-3})$', r'$r_c$ (pc)',r'$\alpha$',r'$M_{\rm tot} (10^6 M_\odot)$']
-        label      = label[:self.nparam]
+        label      = [r'$10^6\rho_c (M_\odot pc^{-3})$', r'$r_c$ (pc)',r'$\alpha$',r'$M_{\rm tot} (10^6 M_\odot)$',r'$M_{\rm BH} (M_\odot)$']
+
+        if self.options.bhflag and not self.options.jerkflag:
+            label.pop(3)
+        else:
+            label = label[:self.nparam]
 
         if self.options.corner:
 
-            if os.path.exists('corner_%s' %(self.options.outfile)):
-                full_chain         = np.load('corner_%s' %(self.options.outfile))
+            if os.path.exists('%scorner_%s' %(self.outdir,self.outfilename)):
+                full_chain         = np.load('%scorner_%s' %(self.outdir,self.outfilename))
             else:
                 full_chain         = np.load(self.options.outfile)[0]
                 full_chain         = full_chain[:,:,:self.nparam]
                 full_chain[:,:,0] *= 1e-6*(1.*units.kg/units.m**3).to(units.solMass/units.pc**3).value
                 full_chain[:,:,1] /= const.pc.value
 
+                # Normalize the jerks results if needed
                 if self.options.jerkflag:
                     full_chain[:,:,3] /= (1e6*const.M_sun.value)
 
-                np.save('corner_%s' %(self.options.outfile), full_chain)
+                # Normalize the blackhole results if needed
+                if self.options.bhflag and not self.options.jerkflag:
+                    full_chain[:,:,3] /= const.M_sun.value
+                elif self.options.bhflag and self.options.jerkflag:
+                    full_chain[:,:,4] /= const.M_sun.value
+
+                np.save('%scorner_%s' %(self.outdir,self.outfilename), full_chain)
 
             full_chain = full_chain.reshape(-1,self.nparam)
             truth      = np.copy(self.theta_init)
@@ -579,15 +560,15 @@ class mcmc_fit:
             print "Plotting the cluster parameter corner plot."
             fig = corner.corner(full_chain, bins=60, labels=label, truths=truth)
             fig.tight_layout()
-            fig.savefig("mcmc_cluster_params.png")
+            fig.savefig("%smcmc_cluster_params.png" %(self.outdir))
             PLT.close('all')
 
         if self.options.chain or self.options.histogram:
             glide = self.options.nglide
 
             # Massage the data and downsample it to plot faster
-            if os.path.exists('glide_%s' %(self.options.outfile)):
-                full_chain = np.load('glide_%s' %(self.options.outfile))
+            if os.path.exists('%sglide_%s' %(self.outdir,self.outfilename)):
+                full_chain = np.load('%sglide_%s' %(self.outdir,self.outfilename))
             else:
                 full_chain                 = np.load(self.options.outfile)[0]
                 full_chain                 = full_chain[:,::glide,:]
@@ -595,11 +576,18 @@ class mcmc_fit:
                 full_chain[:,:,1]         /= const.pc.value
                 full_chain[:,:,self.zmin_ind:self.zmax_ind] /= const.pc.value
 
+                # Normalize the jerk results if needed
                 if self.options.jerkflag:
                     full_chain[:,:,3] /= (1e6*const.M_sun.value)
                     full_chain[:,:,self.vmin_ind:self.vmax_ind] /= 1e3
 
-                np.save('glide_%s' %(self.options.outfile), full_chain)
+                # Normalize the blackhole results if needed
+                if self.options.bhflag and not self.options.jerkflag:
+                    full_chain[:,:,3] /= const.M_sun.value
+                elif self.options.bhflag and self.options.jerkflag:
+                    full_chain[:,:,4] /= const.M_sun.value
+
+                np.save('%sglide_%s' %(self.outdir,self.outfilename), full_chain)
 
             # Make the labels
             for idx in range(self.rsize):
@@ -629,8 +617,14 @@ class mcmc_fit:
                     key_order[1] = idx
                 elif ikey[1] == '\\':
                     key_order[2] = idx
-                elif ikey[1] == 'M' and self.options.jerkflag:
-                    key_order[3] = idx
+                elif ikey[1] == 'M':
+                    if ikey[8] == 't':
+                        key_order[3] = idx
+                    else:
+                        if self.options.jerkflag:
+                            key_order[4] = idx
+                        else:
+                            key_order[3] = idx
                 elif ikey[1] == 'z':
                     psr_name             = ikey.split('rm ')[-1].split('}')[0]
                     psr_idx              = np.where(self.params.PSRNAME==psr_name)[0][0]
@@ -671,14 +665,16 @@ class mcmc_fit:
 
                     if idx%3 == 2:
                         self.fig.tight_layout()
-                        PLT.savefig('cluster_chains%02d.png' %(fnum))
+                        PLT.savefig('%scluster_chains%02d.png' %(self.outdir,fnum))
                         PLT.close('all')
                         fnum += 1
 
-                PLT.savefig('cluster_chains%02d.png' %(fnum))
+                PLT.savefig('%scluster_chains%02d.png' %(self.outdir,fnum))
 
 
             if self.options.histogram:
+                print "Plotting the histograms."
+
                 psr_posn = []
                 # Plot the histogram
                 for idx,iname in enumerate(keys):
@@ -688,26 +684,32 @@ class mcmc_fit:
 
                     # Massage the data slightly and make filenames
                     if idx == 0:
-                        fname = 'histogram_rho_core.png'
+                        fname = '%shistogram_rho_core.png' %(self.outdir)
                     elif idx == 1:
-                        fname = 'histogram_core_radius.png'
+                        fname = '%shistogram_core_radius.png' %(self.outdir)
                     elif idx == 2:
-                        fname = 'histogram_alpha.png'
+                        fname = '%shistogram_alpha.png' %(self.outdir)
                     else:
-                        psr_name = iname.split('rm ')[-1].split('}')[0]
-                        ptype    = iname[1]
-                        fname    = 'histogram_%s_%s.png' %(ptype,psr_name)
+                        if iname[1] == 'M':
+                            if iname[8] == 'B':
+                                fname = '%shistogram_Mbh.png' %(self.outdir)
+                            else:
+                                fname = '%shistogram_Mtot.png' %(self.outdir)
+                        else:
+                            psr_name = iname.split('rm ')[-1].split('}')[0]
+                            ptype    = iname[1]
+                            fname    = '%shistogram_%s_%s.png' %(self.outdir,ptype,psr_name)
 
-                        if ptype == 'B':
-                            scale = 'log'
-                            nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),40)
-                        elif ptype == 'z':
-                            sign  = np.sign(data.mean())
-                            data  = np.fabs(data)
-                            scale = 'log'
-                            nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),40)
-                            if sign == -1:
-                                iname = '|'+iname+'|'
+                            if ptype == 'B':
+                                scale = 'log'
+                                nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),40)
+                            elif ptype == 'z':
+                                sign  = np.sign(data.mean())
+                                data  = np.fabs(data)
+                                scale = 'log'
+                                nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),40)
+                                if sign == -1:
+                                    iname = '|'+iname+'|'
 
                     # Plot the histograms
                     self.tri_plot_init(nsubplot=111)
@@ -717,7 +719,7 @@ class mcmc_fit:
                     self.ax.set_xscale(scale)
 
                     # Special handling of magnetic field histograms and positions
-                    if idx > 2:
+                    if idx > self.nparam:
                         if ptype == 'B':
                             ticks  = np.around(1e-8*np.logspace(np.log10(self.bmin),np.log10(self.bmax),6),3)
                             labels = []
@@ -749,7 +751,7 @@ class mcmc_fit:
                     # Save the median los position of each pulsar to use for 3d simulation
                     if iname[1] == 'z' or iname[2] == 'z':
                         psr_posn.append(sign*mids[argmed])
-                np.save('psr_fit_posns.npy',np.array(psr_posn))
+                np.save('%spsr_fit_posns.npy' %(self.outdir),np.array(psr_posn))
 
 def main():
     """ Calls the main body of the code. Also allows for interactive profiling in ipython if called as a function. """
@@ -757,21 +759,23 @@ def main():
     ### Define Command Line Options
     parser = OptionParser()
     parser.add_option("-f", "--file", action="store", type="string", dest="parfiles", help="Alternate Input File with list of PAR files to examine.")
-    parser.add_option("-o", "--outfile", action="store", type="string", dest="outfile", default='mcmc_results.npy', help="Base name for the output files.")
+    parser.add_option("-o", "--outfile", action="store", type="string", dest="outfile", default='./mcmc_results.npy', help="Base name for the output files.")
     parser.add_option("-l", "--lookup", action="store", type="string", dest="lookup", default='lookup.npy', help="Filename with lookup info for l position normalization.")
     parser.add_option("--hyp2f1", action="store", type="string", dest="hyp2f1", default='hyp2f1.npy', help="Filename with lookup info for hypergeometric function.")
     parser.add_option("-d", "--dir", action="store", type="string", dest="dir", default='/nimrod2/bprager/TER5/PARFILES/', help="Directory to search for parfiles in.")
     parser.add_option("--jerks", action="store_true", dest="jerkflag", default=False, help="Flag to analyze the jerks as well as the accelerations.")
+    parser.add_option("--blackhole", action="store_true", dest="bhflag", default=False, help="Flag to fit for a central black hole.")
     parser.add_option("--cluster", action='store', type='string', dest="cluster", default='Ter5', help="Globular Cluster name. Default = Ter5")
-    parser.add_option("--init", type='string', dest="theta_init", default=np.asarray([9e5,.16,2.4,5e5]), action='callback', callback=optlist, \
-                      help="Initial Guesses for cluster params. [Density(Msun/pc^3),rc(pc),alpha,Mtot(Msun)]. Fourth argument only used if jerk flag is turned on.")
+    parser.add_option("--init", type='string', dest="theta_init", default=np.asarray([9e5,.16,2.4,5e5,1000]), action='callback', callback=optlist, \
+                      help="Initial Guesses for cluster params. [Density(Msun/pc^3),rc(pc),alpha,Mtot(Msun),Mbh(Msun)].")
     parser.add_option("--dval", action="store", type="float", dest="dval", default=5900, help="Assumed distance to cluster.")
     parser.add_option("--bmin", action="store", type="float", dest="bmin", default=1e7, help="Minimum magnetic field strength to test for in Gauss.")
     parser.add_option("--bmax", action="store", type="float", dest="bmax", default=1e10, help="Maximum magnetic field strength to test for in Gauss.")
-    parser.add_option("--nchain", action="store", type="float", dest="nchain", default=200000, help="Number of chains.")
-    parser.add_option("--nburn", action="store", type="float", dest="nburn", default=20000, help="Number of burns.")
-    parser.add_option("--nthin", action="store", type="float", dest="nthin", default=10, help="Number of thinning steps to hand to PTSampler.")
-    parser.add_option("--nglide", action="store", type="float", dest="nglide", default=5, help="Number of steps to glide over in the plot.")
+    parser.add_option("--bhmin", action="store", type="float", dest="bhmin", default=10, help="Minimum black hole mass in solar units.")
+    parser.add_option("--bhmax", action="store", type="float", dest="bhmax", default=1e6, help="Maximum black hole mass in solar units")
+    parser.add_option("--nchain", action="store", type="float", dest="nchain", default=100000, help="Number of chains.")
+    parser.add_option("--nburn", action="store", type="float", dest="nburn", default=10000, help="Number of burns.")
+    parser.add_option("--nglide", action="store", type="float", dest="nglide", default=2, help="Number of steps to glide over in the chain plot.")
     parser.add_option("--nwalker", action="store", type="float", dest="nwalker", default=128, help="Number of walkers.")
     parser.add_option("--ntemp", action="store", type="float", dest="ntemp", default=16, help="Number of temperatures.")
     parser.add_option("--nthread", action="store", type="float", dest="nthread", default=1, help="Number of threads. (Default=1 due to errors on development system. Try at your own risk.)")
