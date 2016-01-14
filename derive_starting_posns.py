@@ -23,6 +23,7 @@ def bh_accel(r,r_rc,l_values,rho_c,r_c,BHMass):
     # Find radii and relevant indices
     r_tidal, r_influence = bh_influence(rho_c,r_c,BHMass)
     rshift_rc            = (r-r_influence)/r_c
+    r_influence_rc       = r_influence/r_c
     accel                = np.zeros(r.size)
     inds_king            = (r>r_influence)
     inds_bh              = np.invert(inds_king)
@@ -33,7 +34,8 @@ def bh_accel(r,r_rc,l_values,rho_c,r_c,BHMass):
     mass_bh_region_r = 8.66*normalization*(r**(1.45)-r_tidal**(1.45))
 
     # Mass outside BH region
-    mass_king_region = 4.19*rho_c*(r**3)*HYP2F1(1.5,.5*alpha,2.5,-rshift_rc**2)
+    king_region_const = -4.19*rho_c*(r_influence**3)*HYP2F1(1.5,.5*alpha,2.5,-r_influence_rc**2)
+    mass_king_region  = 4.19*rho_c*(r**3)*HYP2F1(1.5,.5*alpha,2.5,-rshift_rc**2)+king_region_const
 
     # Find the total acceleration
     accel[inds_king] = -6.67e-11*(BHMass+mass_bh_region+mass_king_region[inds_king])*l_values[inds_king]*constants.pc.value/(r[inds_king]**3)
