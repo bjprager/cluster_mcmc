@@ -18,6 +18,7 @@ from parfile_units import psr_par
 from optparse import OptionParser
 from astropy import units as units
 from presto import sphere_ang_diff
+import derive_starting_posns as DSP
 from scipy.special import factorial
 from scipy.optimize import curve_fit
 import matplotlib.gridspec as gridspec
@@ -336,38 +337,28 @@ class mcmc_fit:
                     self.hyp2f1[idy,idx] = HYP2F1(1.5,.5*ialpha,2.5,-irrc**2)
             np.save(self.options.hyp2f1, self.hyp2f1)
 
-    def rough_l_guess(self,y_measured,shape):
+    def rough_l_guess(self,accel,shape):
         """ Derive some initial guesses on l. """
 
-        if os.path.exists('Ter5_psr_starting_posn.npy'):
-            posn_data = np.load('Ter5_psr_starting_posn.npy')
-            locations = np.ones(shape)
+        # Get the needed cluster parameters
+        rho_c  = self.theta_init[0]
+        r_c    = self.theta_init[1]
+        alpha  = self.theta_init[2]
+        BHMass = self.theta_init[-1]              # Always the final index. Lazy way to grab it since the flag will ensure bad grabs don't matter.
 
-            for ii in range(shape[1]):
-                relative_probability = posn_data[ii,5]/posn_data[ii,4]
-                for jj in range(shape[0]):
-                    z_prob           = np.random.random_sample()
-                    if z_prob < relative_probability:
-                        locations[jj,ii] = posn_data[ii,3]
-                    else:
-                        locations[jj,ii] = posn_data[ii,2]
-            return locations
-        else:
-            l_out  = np.zeros(self.rperp.size)
-            da_out = np.zeros(self.rperp.size)
-            signs  = -1*np.sign(y_measured)
-            l_grid = np.logspace(12,17,20000)
-            for idx,ipsr in enumerate(self.rperp):
-                igrid       = signs[idx]*l_grid
-                r           = np.sqrt(ipsr**2+igrid**2)
-                rho_prefac  = -2.79e-10*self.theta_init[0]
-                r_rc        = r/self.theta_init[1]
-                accel       = rho_prefac*HYP2F1(1.5,.5*self.theta_init[2],2.5,-r_rc**2)*igrid
-                d_accel     = np.fabs(accel-y_measured[idx])
-                best_ind    = np.argmin(d_accel)
-                l_out[idx]  = igrid[best_ind]
-                da_out[idx] = d_accel[best_ind]
-            return np.ones(shape)[:]*l_out
+        # Make an array of accels and positions
+        psr_data  = np.array(zip((self.rperp/const.pc.value).ravel(),accel.ravel()))
+        posn_data = DSP.get_los_posn_prob(psr_data,rho_c,r_c,alpha,BHMass,self.options.bhflag)
+        locations = np.ones(shape)
+        for ii in range(shape[1]):
+            relative_probability = posn_data[ii,5]/posn_data[ii,4]
+            for jj in range(shape[0]):
+                z_prob           = np.random.random_sample()
+                if z_prob < relative_probability:
+                    locations[jj,ii] = posn_data[ii,3]
+                else:
+                    locations[jj,ii] = posn_data[ii,2]
+        return locations
 
     def log_normal(self,x,mu,sigma):
         return (1./(sigma*x*np.sqrt(2*np.pi))*np.exp(-((np.log(x)-mu)/(np.sqrt(2)*sigma))**2))
@@ -440,7 +431,6 @@ class mcmc_fit:
         nthreads = int(self.options.nthread)
         nburn    = int(self.options.nburn)
         nglide   = int(self.options.nglide)
-        nthin    = int(self.options.nthin)
 
         # Get initial guesses for l
         l_guesses       = self.rough_l_guess(y_measured,(nwalkers,self.rsize))
@@ -481,14 +471,10 @@ class mcmc_fit:
 
         # Burning in the data
         print "Beginning the burn-in."
-        try:
-            for p, lnprob, lnlike in sampler.sample(starting_guesses, iterations=nburn):
-                pass
-            sampler.reset()
-            print "Finished the burn in. Starting the sampling"
-        except ValueError:
-            print "Starting Guess array dimensions do not match input. Please delete this file and rerun the script to generate new starting positions"
-            exit()
+        for p, lnprob, lnlike in sampler.sample(starting_guesses, iterations=nburn):
+            pass
+        sampler.reset()
+        print "Finished the burn in. Starting the sampling"
 
         for p, lnprob, lnlike in sampler.sample(p, lnprob0=lnprob, lnlike0=lnlike, iterations=nsteps):
             pass
@@ -761,7 +747,6 @@ def main():
     parser.add_option("-f", "--file", action="store", type="string", dest="parfiles", help="Alternate Input File with list of PAR files to examine.")
     parser.add_option("-o", "--outfile", action="store", type="string", dest="outfile", default='./mcmc_results.npy', help="Base name for the output files.")
     parser.add_option("-l", "--lookup", action="store", type="string", dest="lookup", default='lookup.npy', help="Filename with lookup info for l position normalization.")
-    parser.add_option("--hyp2f1", action="store", type="string", dest="hyp2f1", default='hyp2f1.npy', help="Filename with lookup info for hypergeometric function.")
     parser.add_option("-d", "--dir", action="store", type="string", dest="dir", default='/nimrod2/bprager/TER5/PARFILES/', help="Directory to search for parfiles in.")
     parser.add_option("--jerks", action="store_true", dest="jerkflag", default=False, help="Flag to analyze the jerks as well as the accelerations.")
     parser.add_option("--blackhole", action="store_true", dest="bhflag", default=False, help="Flag to fit for a central black hole.")
