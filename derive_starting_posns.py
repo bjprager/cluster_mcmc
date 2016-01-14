@@ -26,8 +26,6 @@ def bh_accel(r,r_rc,l_values,rho_c,r_c,BHMass):
     accel                = np.zeros(r.size)
     inds_king            = (r>r_influence)
     inds_bh              = np.invert(inds_king)
-    #accel[inds_king]     = -(2.79e-10*rho_c*HYP2F1(1.5,.5*alpha,2.5,-rshift_rc[inds_king]**2)+BHMass*constants.G.value/r[inds_king]**3)*l_values[inds_king]*constants.pc.value
-    #accel[inds_bh]       = -(BHMass*constants.G.value/r[inds_bh]**3)*l_values[inds_bh]*constants.pc.value
 
     # Mass of BH influenced region
     normalization    = rho_c*(r_influence**1.55)
