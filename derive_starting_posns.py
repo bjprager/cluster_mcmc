@@ -17,7 +17,7 @@ def bh_influence(rho_c,r_c,BHMass):
 
     return r_tidal,r_influence
 
-def bh_accel(r,r_rc,l_values,rho_c,r_c,BHMass):
+def bh_accel(r,r_rc,l_values,rho_c,r_c,alpha,BHMass):
     """ Returns the expected accelerations if there is a central black hole. """
 
     # Find radii and relevant indices
@@ -48,7 +48,7 @@ def king_accel(rho_c,r_rc,alpha,l_values):
 
     return -2.79e-10*rho_c*HYP2F1(1.5,.5*alpha,2.5,-r_rc**2)*l_values*constants.pc.value
 
-def king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag=False):
+def king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag):
     """ Calculate the best line of sight position for a given pulsar acceleration and given cluster parameters. """
 
     # Output array with [L1,L2,L1_prob,L2_prob]
@@ -67,22 +67,22 @@ def king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag=False):
         if not BHflag:
             accels = king_accel(rho_c,r_rc,alpha,l_values)
         else:
-            accels = bh_accel(r_values,r_rc,l_values,rho_c,r_c,BHMass)
+            accels = bh_accel(r_values,r_rc,l_values,rho_c,r_c,alpha,BHMass)
 
         # Find where the maximum acceleration is
         accel_max_ind = np.argmax(np.fabs(accels))
 
         # Find the best solution for L1 and L2
         if np.sign(accels[accel_max_ind]) == 1:
-            L1 = l_values[np.argmin(np.fabs(accels[accel_max_ind:]-ipsr[1]))+accel_max_ind]
-            L2 = l_values[np.argmin(np.fabs(accels[:accel_max_ind]-ipsr[1]))]
+            L1 = l_values[np.argmin(np.fabs(accels[accel_max_ind:]-ipsr[1]))+accel_max_ind]*constants.pc.value
+            L2 = l_values[np.argmin(np.fabs(accels[:accel_max_ind]-ipsr[1]))]*constants.pc.value
         else:
-            L1 = l_values[np.argmin(np.fabs(accels[:accel_max_ind]-ipsr[1]))]
-            L2 = l_values[np.argmin(np.fabs(accels[accel_max_ind:]-ipsr[1]))+accel_max_ind]
+            L1 = l_values[np.argmin(np.fabs(accels[:accel_max_ind]-ipsr[1]))]*constants.pc.value
+            L2 = l_values[np.argmin(np.fabs(accels[accel_max_ind:]-ipsr[1]))+accel_max_ind]*constants.pc.value
 
         # Get the probabilities
-        L1_prob = prob_l(ipsr[0],L1*constants.pc.value,np.sort(np.append(-l_values,l_values))*constants.pc.value,r_c,alpha)
-        L2_prob = prob_l(ipsr[0],L2*constants.pc.value,np.sort(np.append(-l_values,l_values))*constants.pc.value,r_c,alpha)
+        L1_prob = prob_l(ipsr[0],L1,np.sort(np.append(-l_values,l_values))*constants.pc.value,r_c,alpha)
+        L2_prob = prob_l(ipsr[0],L2,np.sort(np.append(-l_values,l_values))*constants.pc.value,r_c,alpha)
 
         output[idx] = [L1,L2,L1_prob,L2_prob]
 
@@ -101,6 +101,14 @@ def prob_l(rperp,l_psr,l_values,r_c,alpha):
     denominator   = npsr_l_values*np.sqrt(rperp**2+l_values**2)
 
     return numerator/np.trapz(denominator,x=l_values)
+
+def get_los_posn_prob(psr_data,rho_c,r_c,alpha,BHMass,bhflag):
+    """ Return an array with pulsar positions and probabilities. """
+
+    los_data = king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag=bhflag)
+    los_data = np.hstack((psr_data,los_data))
+
+    return los_data
 
 if __name__ == "__main__":
 
@@ -124,12 +132,8 @@ if __name__ == "__main__":
     alpha  = options.alpha
     BHMass = (options.BHMass*units.solMass).decompose().value
 
-    # Get the line of sight positions
-    if not options.bhflag:
-        los_data = king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass)
-    else:
-        los_data = king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag=True)
-    los_data = np.hstack((psr_data,los_data))
+    # Get the positions and probabilities
+    los_data = get_los_posn_prob(psr_data,rho_c,r_c,alpha,BHMass,options.bhflag)
 
     # Save the output
     if options.outfile == None:
