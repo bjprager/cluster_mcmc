@@ -51,19 +51,16 @@ def log_l_pos_fnc(theta,rp_l_2,r,rc_grid,alpha_grid,lookup):
     else:
         return -np.inf
 
-def bh_influence(theta,bh_ind):
+def bh_influence(rho_c,rc,BHMass):
     """
     Calculate the radius of influence and tidal radius for a central black hole.
     The tidal radius is calculated for a solar mass and solar radius star. 
     """
 
-    rho_c       = theta[0]
-    r_c         = theta[1] 
-    M_bh        = theta[bh_ind]
-    numerator   = 3*M_bh
-    denominator = 8*np.pi*rho_c*r_c*r_c
+    numerator   = 3*BHMass
+    denominator = 8*np.pi*rho_c*rc*rc
     r_influence = numerator/denominator
-    r_tidal     = .057*(M_bh**(0.33))                       # Coefficient is taken from Eqn 1 Baumgardt 2004 for a solar mass solar radius star.
+    r_tidal     = .057*(BHMass**(0.33))                       # Coefficient is taken from Eqn 1 Baumgardt 2004 for a solar mass solar radius star.
 
     return r_tidal,r_influence
 
@@ -87,21 +84,30 @@ def model_accel_fnc(theta,r,l_values,jflag,bhflag):
     if not bhflag:
         return -2.79e-10*rho_c*HYP2F1(1.5,.5*alpha,2.5,-r_rc**2)*l_values
     else:
-        if jflag:
-           bh_ind = 4
-        else:
-           bh_ind = 3
-
-        rho_c                = theta[0]
-        r_tidal, r_influence = bh_influence(theta,bh_ind)
+        # Find radii and relevant indices
+        BHMass               = theta[3+jflag]
+        r_tidal, r_influence = bh_influence(rho_c,rc,BHMass)
         r_influence_rc       = r_influence/rc
-        norm, rho_c_king     = rho_at_r_influence(rho_c,r_tidal, r_influence)
+        rshift_rc            = (r-r_influence)/rc
         accel                = np.zeros(r.size)
         inds_king            = (r>r_influence)
         inds_bh              = np.invert(inds_king)
-        accel[inds_king]     = -(6.71e-10**norm*(r_influence-r_tidal)**(1.25)+2.79e-10*rho_c_king*(HYP2F1(1.5,.5*alpha,2.5,-r_rc[inds_king]**2)-HYP2F1(1.5,.5*alpha,2.5,-r_influence_rc**2)))
-        accel[inds_bh]       = -6.71e-10**norm*(r[inds_bh]-r_tidal)**(1.25)
-        return accel*l_values
+        r3                   = 1/(r*r*r)
+
+        # Mass of BH influenced region
+        normalization    = rho_c*(r_influence**1.55)
+        mass_bh_region   = 8.66*normalization*(r_influence**(1.45)-r_tidal**(1.45))
+        mass_bh_region_r = 8.66*normalization*(r**(1.45)-r_tidal**(1.45))
+
+        # Mass outside BH region
+        king_region_const = -4.19*rho_c*(r_influence**3)*HYP2F1(1.5,.5*alpha,2.5,-r_influence_rc**2)
+        mass_king_region  = 4.19*rho_c*(r**3)*HYP2F1(1.5,.5*alpha,2.5,-rshift_rc**2)+king_region_const
+
+        # Find the total acceleration
+        accel[inds_king] = -6.67e-11*(BHMass+mass_bh_region+mass_king_region[inds_king])*l_values[inds_king]*r3[inds_king]
+        accel[inds_bh]   = -6.67e-11*(BHMass+mass_bh_region_r[inds_bh])*l_values[inds_bh]*r3[inds_bh]
+
+        return accel
 
 def log_likelihood_accel_pbdot_fnc(y_model,y_measured,y_measured_var_div):
     """ Return the log likelihood values for a normal distribution of accelerations around a model for the binary systems with a measured PBDOT. """
@@ -136,8 +142,9 @@ def log_jerk_mf_fnc(theta,r,vmin_ind,vmax_ind,j_measured,j_measured_var_div,bhfl
 
     # Unpact values
     rho_c = theta[0]
-    r_rc  = r/theta[1]
+    rc    = theta[1]
     alpha = theta[2]
+    r_rc  = r/rc
 
     # Get the density at each pulsar
     if not bhflag:
@@ -145,12 +152,13 @@ def log_jerk_mf_fnc(theta,r,vmin_ind,vmax_ind,j_measured,j_measured_var_div,bhfl
     else:
         bh_ind               = 4
         rho_psr              = np.zeros(r.size)
-        r_tidal, r_influence = bh_influence(theta)
+        r_tidal, r_influence = bh_influence(rho_c,rc,BHMass)
+        rshift_rc            = (r-r_influence)/rc
         inds_king            = (r>r_influence)
         inds_bh              = np.invert(inds_king)
-        norm, rho_c_king     = rho_at_r_influence(r_tidal, r_influence)
-        rho_psr[inds_king]   = density_at_r(rho_c_king,r_rc[inds_king],alpha)
-        rho_psr[inds_bh]     = norm*r[inds+bh]**(-1.75)
+        normalization        = rho_c*(r_influence**1.55)
+        rho_psr[inds_king]   = density_at_r(rho_c,rshift_rc[inds_king],alpha)
+        rho_psr[inds_bh]     = normalization*r[inds+bh]**(-1.55)
 
     # Get the predicted mean field jerk
     j_mf = 2.79e-10*rho_psr*theta[vmin_ind:vmax_ind]
