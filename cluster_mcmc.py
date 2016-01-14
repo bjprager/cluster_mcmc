@@ -630,22 +630,32 @@ class mcmc_fit:
                 print "Plotting the chains."
                 fnum   = 0
                 for idx,iname in enumerate(keys):
+
+                    # Define a mask
+                    median      = np.median(chain_dict[iname])
+                    std         = np.std(chain_dict[iname])
+                    mask        = ((np.fabs(chain_dict[iname]-median)/std)>3)
+                    masked_data = np.ma.masked_array(chain_dict[iname],mask=mask,fill_value=np.nan).filled()
+
                     if idx%3 == 0:
                         self.tri_plot_init()
-                        self.ax.plot(np.arange(chain_dict[iname].shape[0])*glide,chain_dict[iname],color='k',alpha=0.02)
+                        #self.ax.plot(np.arange(chain_dict[iname].shape[0])*glide,chain_dict[iname],color='k',alpha=0.2)
+                        self.ax.plot(np.arange(chain_dict[iname].shape[0])*glide,masked_data,color='k',alpha=0.02)
                         self.ax.set_ylabel(iname, fontsize=16)
                         self.ax.set_xlim([0,chain_dict[iname].shape[0]])
                         PLT.setp(self.ax.get_xticklabels(), visible=False)
 
                     if idx%3 == 1:
                         self.ax2 = self.fig.add_subplot(312,sharex=self.ax)
-                        self.ax2.plot(np.arange(chain_dict[iname].shape[0])*glide,chain_dict[iname],color='k',alpha=0.02)
+                        #self.ax2.plot(np.arange(chain_dict[iname].shape[0])*glide,chain_dict[iname],color='k',alpha=0.2)
+                        self.ax2.plot(np.arange(chain_dict[iname].shape[0])*glide,masked_data,color='k',alpha=0.02)
                         self.ax2.set_ylabel(iname, fontsize=16)
                         PLT.setp(self.ax2.get_xticklabels(), visible=False)
 
                     if idx%3 == 2:
                         self.ax3 = self.fig.add_subplot(313,sharex=self.ax)
-                        self.ax3.plot(np.arange(chain_dict[iname].shape[0])*glide,chain_dict[iname],color='k',alpha=0.02)
+                        #self.ax3.plot(np.arange(chain_dict[iname].shape[0])*glide,chain_dict[iname],color='k',alpha=0.2)
+                        self.ax3.plot(np.arange(chain_dict[iname].shape[0])*glide,masked_data,color='k',alpha=0.02)
                         self.ax3.set_ylabel(iname, fontsize=16)
                         self.ax3.set_xlabel('Steps')
 
@@ -723,21 +733,6 @@ class mcmc_fit:
 
                     PLT.savefig(fname)
                     PLT.close('all')
-
-                    # Print the median and +/- confidence intervals
-                    mids   = 0.5*(edges[:-1]+edges[1:])
-                    cdf    = np.cumsum(counts)/np.sum(counts).astype('float')
-                    argmed = np.argmin(np.fabs(cdf-0.5))
-                    arglo  = np.argmin(np.fabs(cdf-0.16))
-                    arghi  = np.argmin(np.fabs(cdf-0.84))
-                    if idx == 0:
-                        print "Label Median -1sigma +1sigma"
-                    print '%s %4.3f %4.3f %4.3f' %(iname,mids[argmed],mids[argmed]-mids[arglo],mids[arghi]-mids[argmed])
-
-                    # Save the median los position of each pulsar to use for 3d simulation
-                    if iname[1] == 'z' or iname[2] == 'z':
-                        psr_posn.append(sign*mids[argmed])
-                np.save('%spsr_fit_posns.npy' %(self.outdir),np.array(psr_posn))
 
 def main():
     """ Calls the main body of the code. Also allows for interactive profiling in ipython if called as a function. """
