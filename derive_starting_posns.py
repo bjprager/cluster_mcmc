@@ -41,7 +41,7 @@ def bh_accel(r,r_rc,l_values,rho_c,r_c,alpha,BHMass):
     accel[inds_king] = -6.67e-11*(BHMass+mass_bh_region+mass_king_region[inds_king])*l_values[inds_king]*constants.pc.value/(r[inds_king]**3)
     accel[inds_bh]   = -6.67e-11*(BHMass+mass_bh_region_r[inds_bh])*l_values[inds_bh]*constants.pc.value/(r[inds_bh]**3)
 
-    return accel
+    return accel, r_influence
 
 def king_accel(rho_c,r_rc,alpha,l_values):
     """ Returns the accelerations at a given r for the King model. """
@@ -52,7 +52,9 @@ def king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag):
     """ Calculate the best line of sight position for a given pulsar acceleration and given cluster parameters. """
 
     # Output array with [L1,L2,L1_prob,L2_prob]
-    output = np.zeros((psr_data.shape[0],4))
+    output      = np.zeros((psr_data.shape[0],4))
+    max_L       = np.zeros(psr_data.shape[0])
+    r_influence = 0
 
     # Iterate over pulsars
     for idx,ipsr in enumerate(psr_data):
@@ -67,7 +69,7 @@ def king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag):
         if not BHflag:
             accels = king_accel(rho_c,r_rc,alpha,l_values)
         else:
-            accels = bh_accel(r_values,r_rc,l_values,rho_c,r_c,alpha,BHMass)
+            accels,r_influence = bh_accel(r_values,r_rc,l_values,rho_c,r_c,alpha,BHMass)
 
         # Find where the maximum acceleration is
         accel_max_ind = np.argmax(np.fabs(accels))
@@ -85,8 +87,9 @@ def king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag):
         L2_prob = prob_l(ipsr[0],L2,np.sort(np.append(-l_values,l_values))*constants.pc.value,r_c,alpha)
 
         output[idx] = [L1,L2,L1_prob,L2_prob]
+        max_L[idx]  = l_values[accel_max_ind]*constants.pc.value
 
-    return output
+    return output,max_L,r_influence
 
 def npsr_fnc(rperp,l,r_c,alpha):
     """ Return the pulsar density """
@@ -102,13 +105,13 @@ def prob_l(rperp,l_psr,l_values,r_c,alpha):
 
     return numerator/np.trapz(denominator,x=l_values)
 
-def get_los_posn_prob(psr_data,rho_c,r_c,alpha,BHMass,bhflag):
+def get_los_posn_prob(psr_data,rho_c,r_c,alpha,BHMass,bhflag,maxLflag=False):
     """ Return an array with pulsar positions and probabilities. """
 
-    los_data = king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag=bhflag)
-    los_data = np.hstack((psr_data,los_data))
+    los_data,max_L,r_influence = king_accel_los_posn(psr_data,rho_c,r_c,alpha,BHMass,BHflag=bhflag)
+    los_data                   = np.hstack((psr_data,los_data))
 
-    return los_data
+    return los_data,r_influence
 
 if __name__ == "__main__":
 
