@@ -1,6 +1,6 @@
 import matplotlib
 # Force matplotlib to not use any Xwindows backend.
-matplotlib.use('Agg')
+#matplotlib.use('Agg')
 
 import os
 import corner
@@ -25,6 +25,7 @@ import matplotlib.gridspec as gridspec
 from scipy.interpolate import interp2d
 from astropy import constants as const
 from scipy.special import hyp2f1 as HYP2F1
+from matplotlib.widgets import RectangleSelector,MultiCursor
 
 def optlist(option, opt, value, parser):
     """
@@ -347,9 +348,9 @@ class mcmc_fit:
         BHMass = self.theta_init[-1]              # Always the final index. Lazy way to grab it since the flag will ensure bad grabs don't matter.
 
         # Make an array of accels and positions
-        psr_data  = np.array(zip((self.rperp/const.pc.value).ravel(),accel.ravel()))
-        posn_data = DSP.get_los_posn_prob(psr_data,rho_c,r_c,alpha,BHMass,self.options.bhflag)
-        locations = np.ones(shape)
+        psr_data              = np.array(zip((self.rperp/const.pc.value).ravel(),accel.ravel()))
+        posn_data,r_influence = DSP.get_los_posn_prob(psr_data,rho_c,r_c,alpha,BHMass,self.options.bhflag)
+        locations             = np.ones(shape)
         for ii in range(shape[1]):
             relative_probability = posn_data[ii,5]/posn_data[ii,4]
             for jj in range(shape[0]):
@@ -431,6 +432,7 @@ class mcmc_fit:
         nthreads = int(self.options.nthread)
         nburn    = int(self.options.nburn)
         nglide   = int(self.options.nglide)
+        nthin    = int(self.options.nthin)
 
         # Get initial guesses for l
         l_guesses       = self.rough_l_guess(y_measured,(nwalkers,self.rsize))
@@ -457,6 +459,13 @@ class mcmc_fit:
                 v_inits  = np.random.normal(v_inits,.05*np.fabs(v_inits))
                 starting_guesses[ii,:,self.vmin_ind:self.vmax_ind] = v_inits
 
+            # Make the black hole mass spaced evenly in log space if needed
+            if self.options.bhflag:
+                bhmin_log = np.log10(self.options.bhmin)
+                bhmax_log = np.log10(self.options.bhmax)
+                delta_bh  = (bhmax_log-bhmin_log)
+                starting_guesses[ii,:,self.nparam-1] = (10**(bhmin_log+delta_bh*np.random.random((nwalkers,))))*const.M_sun.value
+
         # Make the argument list to pass to the MCMC handler
         args = [self.rperp,P0,y_measured,y_measured_var_div,j_measured,j_measured_var_div,self.zmin_ind,self.zmax_ind \
                 ,self.ISO_INDS,self.PBDOT_INDS,self.rc_grid,self.alpha_grid,self.lookup,l_signs,self.J_INDS \
@@ -476,7 +485,7 @@ class mcmc_fit:
         sampler.reset()
         print "Finished the burn in. Starting the sampling"
 
-        for p, lnprob, lnlike in sampler.sample(p, lnprob0=lnprob, lnlike0=lnlike, iterations=nsteps):
+        for p, lnprob, lnlike in sampler.sample(p, lnprob0=lnprob, lnlike0=lnlike, iterations=nsteps, thin=nthin):
             pass
 
         # Save the array
@@ -496,6 +505,25 @@ class mcmc_fit:
         height   = h/dpi
         self.fig = PLT.figure(figsize=(width,height),dpi=dpi)
         self.ax  = self.fig.add_subplot(nsubplot)
+
+    def line_select_callback(self,eclick, erelease):
+        'eclick and erelease are the press and release events'
+        x1, y1 = eclick.xdata, eclick.ydata
+        x2, y2 = erelease.xdata, erelease.ydata
+        self.x1y1     = [x1,y1]
+        self.x2y2     = [x2,y2]
+
+    def toggle_selector(self,event):
+        print (' Key pressed.')
+        if event.key in ['Q', 'q'] and self.toggle_selector.RS.active:
+            print (' RectangleSelector deactivated.')
+            toggle_selector.RS.set_active(False)
+        if event.key in ['A', 'a'] and not self.toggle_selector.RS.active:
+            print (' RectangleSelector activated.')
+            toggle_selector.RS.set_active(True)
+
+    def gaussian_fnc(self,x,A,mu,sigma):
+        return A*np.exp(-(x-mu)**2/(2*sigma**2))
 
     def chains_to_dict(self,names,full_chain):
         chains   = [full_chain[:,:,ii].T for ii in range(len(names))]
@@ -544,7 +572,8 @@ class mcmc_fit:
             truth[1]  /= const.pc.value
 
             print "Plotting the cluster parameter corner plot."
-            fig = corner.corner(full_chain, bins=60, labels=label, truths=truth)
+            lvls = 1.0-np.exp(-0.5*np.arange(0.5,2.6,0.5)**2)
+            fig  = corner.corner(full_chain, bins=60, labels=label, truths=truth,smooth=1.0,levels=lvls,data_kwargs={'alpha':.005})
             fig.tight_layout()
             fig.savefig("%smcmc_cluster_params.png" %(self.outdir))
             PLT.close('all')
@@ -621,7 +650,6 @@ class mcmc_fit:
                 elif ikey[1] == 'v' and self.options.jerkflag:
                     key_order[self.vmin_ind+vidx]  = idx
                     vidx                          += 1
-
             keys = keys[key_order.astype('int')]
 
             # Plot the chains if requested
@@ -671,7 +699,14 @@ class mcmc_fit:
             if self.options.histogram:
                 print "Plotting the histograms."
 
-                psr_posn = []
+                # Open output file for line of sight positions if needed
+                if self.options.threedplot:
+                    if os.path.exists('%slos_posns.txt' %(self.outdir)):
+                        psrs_examined = np.loadtxt('%slos_posns.txt' %(self.outdir), dtype='str', usecols=(0,))
+                    else:
+                        psrs_examined = []
+                    fp = open('%slos_posns.txt' %(self.outdir), 'a')
+
                 # Plot the histogram
                 for idx,iname in enumerate(keys):
                     nbin  = 60
@@ -689,6 +724,8 @@ class mcmc_fit:
                         if iname[1] == 'M':
                             if iname[8] == 'B':
                                 fname = '%shistogram_Mbh.png' %(self.outdir)
+                                scale = 'log'
+                                nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),50)
                             else:
                                 fname = '%shistogram_Mtot.png' %(self.outdir)
                         else:
@@ -698,18 +735,24 @@ class mcmc_fit:
 
                             if ptype == 'B':
                                 scale = 'log'
-                                nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),40)
+                                nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),50)
                             elif ptype == 'z':
                                 sign  = np.sign(data.mean())
-                                data  = np.fabs(data)
-                                scale = 'log'
-                                nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),40)
-                                if sign == -1:
-                                    iname = '|'+iname+'|'
+
+                                if self.options.linhist:
+                                    scale = 'linear'
+                                    nbin  = np.linspace(np.amin(data),np.amax(data),50)
+                                else:
+                                    scale = 'log'
+                                    data  = np.fabs(data)
+                                    nbin  = np.logspace(np.log10(np.amin(data)),np.log10(np.amax(data)),50)
+                                    if sign == -1:
+                                        iname = '|'+iname+'|'
 
                     # Plot the histograms
                     self.tri_plot_init(nsubplot=111)
                     counts,edges,inds = self.ax.hist(data, bins=nbin, facecolor='black', alpha=0.75)
+                    centers           = 0.5*(edges[:-1]+edges[1:])
                     self.ax.set_xlabel(iname, fontsize=16)
                     self.ax.set_ylabel('Counts')
                     self.ax.set_xscale(scale)
@@ -728,11 +771,78 @@ class mcmc_fit:
                             self.ax.get_xaxis().get_major_formatter().labelOnlyBase = False
                             self.ax.set_xticklabels(labels)
                             self.ax.set_xlim([0.99*self.bmin,1.01*self.bmax])
-                        elif ptype == 'z':
-                            self.ax.set_xlim([1e-4,1e2])
+                        elif ptype == 'z' and not self.options.linhist:
+                            self.ax.set_xlim([1e-6,1e2])
 
                     PLT.savefig(fname)
                     PLT.close('all')
+
+                    if idx < self.zmax_ind and self.options.threedplot:
+                        if idx == 0:
+                            psr_name = 'rho_c'
+                            sign     = 1
+                        elif idx == 1:
+                            psr_name = 'r_c'
+                            sign     = 1
+                        elif idx == 2:
+                            psr_name = 'alpha'
+                            sign     = 1
+
+                        # Make the indices that we should check
+                        if psr_name not in psrs_examined:
+                            # Gaussian position list
+                            med_list = np.array([])
+                            sig_list = np.array([])
+                            sum_list = np.array([])
+
+                            # Initiate the plots
+                            self.tri_plot_init(nsubplot=111)
+                            PLT.ion()
+                            self.ax.plot(centers,counts,color='k',drawstyle='steps')
+                            self.ax.set_xlabel(iname, fontsize=16)
+                            self.ax.set_ylabel('Counts')
+                            self.ax.set_xscale(scale)
+
+                            # Iterate over fits
+                            while True:
+                                # Select the region to fit
+                                cursor = MultiCursor(self.fig.canvas,(self.ax,),useblit=True, color='red',lw=1)
+                                self.toggle_selector.__func__.RS = RectangleSelector(self.ax, self.line_select_callback, drawtype='box', useblit=True, button=[1,3], minspanx=5, minspany=5, spancoords='pixels')
+                                PLT.connect('key_press_event', self.toggle_selector)
+                                PLT.show()
+                                flag = raw_input("Press c to fit gaussian, q to quit. ")
+
+                                if flag == 'q':
+                                    break
+
+                                # Order the points and grab needed values
+                                xmin = np.amin([self.x1y1[0],self.x2y2[0]])
+                                xmax = np.amax([self.x1y1[0],self.x2y2[0]])
+
+                                # Fit the gaussian in this region
+                                inds      = (centers>xmin)&(centers<xmax)
+                                xfit      = centers[inds]
+                                yfit      = counts[inds]
+                                popt,pcov = curve_fit(self.gaussian_fnc, xfit, yfit, p0=[np.amax(yfit),xfit[np.argmax(yfit)],(xfit[np.argmax(yfit)]-xfit[np.argmin(yfit)])/2.])
+                                ymodel    = self.gaussian_fnc(centers,popt[0],popt[1],popt[2])
+                                PLT.plot(centers,ymodel,color='r',linestyle='--')
+                                med_list = np.append(med_list,popt[1])
+                                sig_list = np.append(sig_list,np.fabs(popt[2]))
+                                sum_list = np.append(sum_list,yfit.sum())
+                                self.fig.canvas.manager.window.raise_()
+
+                            # Sort the values into L1,L2
+                            inds     = np.argsort(sum_list)[::-1]
+                            med_list = sign*med_list[inds]
+                            sig_list = sig_list[inds]
+                            sum_list = sum_list[inds]
+
+                            # Write to a text document with line of sight fits
+                            info_str = '%-4s ' %(psr_name)
+                            for idx in range(len(med_list)):
+                                info_str += '%-3.2e %-3.2e %-3.2e ' %(sum_list[idx],med_list[idx],sig_list[idx])
+                            info_str += '\n'
+                            fp.write(info_str)
 
 def main():
     """ Calls the main body of the code. Also allows for interactive profiling in ipython if called as a function. """
@@ -746,16 +856,17 @@ def main():
     parser.add_option("--jerks", action="store_true", dest="jerkflag", default=False, help="Flag to analyze the jerks as well as the accelerations.")
     parser.add_option("--blackhole", action="store_true", dest="bhflag", default=False, help="Flag to fit for a central black hole.")
     parser.add_option("--cluster", action='store', type='string', dest="cluster", default='Ter5', help="Globular Cluster name. Default = Ter5")
-    parser.add_option("--init", type='string', dest="theta_init", default=np.asarray([9e5,.16,2.4,5e5,1000]), action='callback', callback=optlist, \
+    parser.add_option("--init", type='string', dest="theta_init", default=np.asarray([9e5,.16,2.4,5e5,10]), action='callback', callback=optlist, \
                       help="Initial Guesses for cluster params. [Density(Msun/pc^3),rc(pc),alpha,Mtot(Msun),Mbh(Msun)].")
     parser.add_option("--dval", action="store", type="float", dest="dval", default=5900, help="Assumed distance to cluster.")
     parser.add_option("--bmin", action="store", type="float", dest="bmin", default=1e7, help="Minimum magnetic field strength to test for in Gauss.")
     parser.add_option("--bmax", action="store", type="float", dest="bmax", default=1e10, help="Maximum magnetic field strength to test for in Gauss.")
-    parser.add_option("--bhmin", action="store", type="float", dest="bhmin", default=10, help="Minimum black hole mass in solar units.")
+    parser.add_option("--bhmin", action="store", type="float", dest="bhmin", default=1, help="Minimum black hole mass in solar units.")
     parser.add_option("--bhmax", action="store", type="float", dest="bhmax", default=1e6, help="Maximum black hole mass in solar units")
     parser.add_option("--nchain", action="store", type="float", dest="nchain", default=100000, help="Number of chains.")
     parser.add_option("--nburn", action="store", type="float", dest="nburn", default=10000, help="Number of burns.")
-    parser.add_option("--nglide", action="store", type="float", dest="nglide", default=2, help="Number of steps to glide over in the chain plot.")
+    parser.add_option("--nglide", action="store", type="float", dest="nglide", default=20, help="Number of steps to glide over in the chain plot.")
+    parser.add_option("--nthin", action="store", type="float", dest="nthin", default=5, help="Number of thinning steps to the PTSampler. Reduces output array memory usage when running long chains.")
     parser.add_option("--nwalker", action="store", type="float", dest="nwalker", default=128, help="Number of walkers.")
     parser.add_option("--ntemp", action="store", type="float", dest="ntemp", default=16, help="Number of temperatures.")
     parser.add_option("--nthread", action="store", type="float", dest="nthread", default=1, help="Number of threads. (Default=1 due to errors on development system. Try at your own risk.)")
@@ -764,6 +875,7 @@ def main():
     parser.add_option("--chain", action="store_true", dest="chain", default=False, help="Make a chain plot.")
     parser.add_option("--histogram", action="store_true", dest="histogram", default=False, help="Make marginalized distribution plots.")
     parser.add_option("--threedplot", action="store_true", dest="threedplot", default=False, help="Make a file with info for producing 3d plots of results.")
+    parser.add_option("--linhist", action="store_true", dest="linhist", default=False, help="Plot the position histogram as linear spacing.")
     (options, args) = parser.parse_args()
 
     ### Define list of par files to fit
