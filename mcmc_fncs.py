@@ -240,6 +240,22 @@ def log_likelihood(theta,args):
 def log_prior(theta,args):
 
     # Unpack values
-    lb = args[22]
-    ub = args[23]
-    return log_prior_fnc(theta,lb,ub)
+    jflag  = args[20]
+    bhflag = args[21]
+    lb     = args[22]
+    ub     = args[23]
+
+    # Calculate the priors
+    log_prior = log_prior_fnc(theta,lb,ub)
+
+    if not bhflag:
+        return log_prior
+    else:
+        if jflag:
+            bhmass = theta[4]
+        else:
+            bhmass = theta[3]
+
+        log_bhmass_prior = -np.log(bhmass)
+
+        return log_prior+log_bhmass_prior
