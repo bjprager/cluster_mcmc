@@ -1,6 +1,6 @@
 import matplotlib
 # Force matplotlib to not use any Xwindows backend.
-#matplotlib.use('Agg')
+matplotlib.use('Agg')
 
 import os
 import corner
@@ -201,16 +201,9 @@ class mcmc_fit:
         self.theta_init[0]  = (self.theta_init[0]*units.solMass/units.pc**3).decompose().value
         self.theta_init[1] *= const.pc.value
         self.theta_init[3] *= const.M_sun.value
-        self.theta_init[4] *= const.M_sun.value
 
-        if options.bhflag and options.jerkflag:
-            self.nparam = 5
-        elif options.jerkflag and not options.bhflag:
+        if options.bhflag:
             self.nparam = 4
-            self.theta_init = self.theta_init[:self.nparam]
-        elif options.bhflag and not options.jerkflag:
-            self.nparam = 4
-            self.theta_init = self.theta_init[[0,1,2,4]]
         else:
             self.nparam     = 3
             self.theta_init = self.theta_init[:self.nparam]
@@ -232,58 +225,10 @@ class mcmc_fit:
 
         # Add velocities if using jerk flag
         if options.jerkflag:
-            self.ndim    += self.jsize
+            self.ndim += self.jsize
 
         # Define some variables for the mcmc code
-        self.rc_max     = 2.*const.pc.value
-        self.Mtot_min   = 50000
-        self.Mtot_max   = 1000000
-        self.jerk_pdf_grid()
-
-    def jerk_pdf_grid(self,dr=0.5):
-        """ Create a list with functions for the mean and standard deviation of jerk. """
-
-        nmass                = 500
-        nrc                  = 500
-        self.jerk_mass_grid  = np.linspace(np.amin(self.Mtot_min),np.amax(self.Mtot_max),nmass)
-        self.jerk_rc_grid    = np.linspace(0,self.rc_max/const.pc.value,nrc)
-
-        if os.path.exists('neigh.jerk.lookup.npy'):
-            self.neigh_jerk_lookup = np.load('neigh.jerk.lookup.npy')
-        else:
-            print "Making the lookup table for neighbor jerks."
-
-            # Load data from simulations
-            mu_contour     = np.load('mu.grid.0.5rc.npy')
-            sigma_contour  = np.load('sigma.grid.0.5rc.npy')
-            mu_fnc_list    = []
-            sigma_fnc_list = []
-
-            for ii in range(mu_contour.shape[0]):
-                mus    = mu_contour[ii]
-                sigmas = sigma_contour[ii]
-                masses = mus[0,:,0]
-                rcs    = mus[1,0,:]
-
-                mu_fnc_list.append(interp2d(rcs, masses, mus[2]))
-                sigma_fnc_list.append(interp2d(rcs, masses, sigmas[2]))
-
-            # Make the lookup table
-            jerk_radii             = 0.5*np.arange(mu_contour.shape[0])+0.25
-            self.neigh_jerk_lookup = np.zeros((4,nmass,nrc))
-
-            for ii,imass in enumerate(self.jerk_mass_grid):
-                for jj,irc in enumerate(self.jerk_mass_grid):
-                    mu        = np.vstack([fnc(irc,imass) for fnc in mu_fnc_list])
-                    sigma     = np.vstack([fnc(irc,imass) for fnc in sigma_fnc_list])
-                    fit_mu    = np.polyfit(jerk_radii,mu.T[0],1)
-                    fit_sigma = np.polyfit(jerk_radii,sigma.T[0],1)
-                    self.neigh_jerk_lookup[0,ii,jj] = fit_mu[0]
-                    self.neigh_jerk_lookup[1,ii,jj] = fit_mu[1]
-                    self.neigh_jerk_lookup[2,ii,jj] = fit_sigma[0]
-                    self.neigh_jerk_lookup[3,ii,jj] = fit_sigma[1]
-
-            np.save('neigh.jerk.lookup.npy',self.neigh_jerk_lookup)
+        self.rc_max = 2.*const.pc.value
 
     def l_pos_denom_lookup(self):
         """ Make a lookup table for the l pos denominator according to Phinney 1993 Eqn 3.7. """
@@ -345,7 +290,11 @@ class mcmc_fit:
         rho_c  = self.theta_init[0]
         r_c    = self.theta_init[1]
         alpha  = self.theta_init[2]
-        BHMass = self.theta_init[-1]              # Always the final index. Lazy way to grab it since the flag will ensure bad grabs don't matter.
+
+        if self.options.bhflag:
+            BHMass = self.theta_init[3]
+        else:
+            BHMass = 0
 
         # Make an array of accels and positions
         psr_data              = np.array(zip((self.rperp/const.pc.value).ravel(),accel.ravel()))
@@ -382,15 +331,11 @@ class mcmc_fit:
     def make_prior_array(self,l_signs):
 
         # Out a better way to handle priors quickly
-        lb = np.array([1e-4*self.theta_init[0],0,1,self.Mtot_min*const.M_sun.value,self.options.bhmin*const.M_sun.value])
-        ub = np.array([1e4*self.theta_init[0],self.rc_max,8,self.Mtot_max*const.M_sun.value,self.options.bhmax*const.M_sun.value])
+        lb = np.array([1e-4*self.theta_init[0],0,1,self.options.bhmin*const.M_sun.value])
+        ub = np.array([1e4*self.theta_init[0],self.rc_max,8,self.options.bhmax*const.M_sun.value])
 
-        if self.options.bhflag and not self.options.jerkflag:
-            lb = lb[[0,1,2,4]]
-            ub = ub[[0,1,2,4]]
-        else:
-            lb = lb[:self.nparam]
-            ub = ub[:self.nparam]
+        lb = lb[:self.nparam]
+        ub = ub[:self.nparam]
 
         for idx in range(l_signs.size):
             if l_signs[idx] == 1:
@@ -469,7 +414,7 @@ class mcmc_fit:
         # Make the argument list to pass to the MCMC handler
         args = [self.rperp,P0,y_measured,y_measured_var_div,j_measured,j_measured_var_div,self.zmin_ind,self.zmax_ind \
                 ,self.ISO_INDS,self.PBDOT_INDS,self.rc_grid,self.alpha_grid,self.lookup,l_signs,self.J_INDS \
-                ,self.jerk_mass_grid,self.jerk_rc_grid,self.neigh_jerk_lookup,self.vmin_ind,self.vmax_ind,self.options.jerkflag,self.options.bhflag,lb,ub]
+                ,self.vmin_ind,self.vmax_ind,self.options.jerkflag,self.options.bhflag,lb,ub]
 
         # Sample the distribution
         try:
@@ -533,16 +478,12 @@ class mcmc_fit:
         """ Plot the mcmc results in a corner plot. """
 
         # Dimensions of the simulation
-        nwalkers   = self.options.nwalker
-        nsteps     = self.options.nchain
-        nburn      = self.options.nburn
-        glide      = self.options.nglide
-        label      = [r'$10^6\rho_c (M_\odot pc^{-3})$', r'$r_c$ (pc)',r'$\alpha$',r'$M_{\rm tot} (10^6 M_\odot)$',r'$M_{\rm BH} (M_\odot)$']
-
-        if self.options.bhflag and not self.options.jerkflag:
-            label.pop(3)
-        else:
-            label = label[:self.nparam]
+        nwalkers = self.options.nwalker
+        nsteps   = self.options.nchain
+        nburn    = self.options.nburn
+        glide    = self.options.nglide
+        label    = [r'$10^6\rho_c (M_\odot pc^{-3})$', r'$r_c$ (pc)',r'$\alpha$',r'$M_{\rm BH} (M_\odot)$']
+        label    = label[:self.nparam]
 
         if self.options.corner:
 
@@ -554,15 +495,9 @@ class mcmc_fit:
                 full_chain[:,:,0] *= 1e-6*(1.*units.kg/units.m**3).to(units.solMass/units.pc**3).value
                 full_chain[:,:,1] /= const.pc.value
 
-                # Normalize the jerks results if needed
-                if self.options.jerkflag:
-                    full_chain[:,:,3] /= (1e6*const.M_sun.value)
-
                 # Normalize the blackhole results if needed
-                if self.options.bhflag and not self.options.jerkflag:
+                if self.options.bhflag:
                     full_chain[:,:,3] /= const.M_sun.value
-                elif self.options.bhflag and self.options.jerkflag:
-                    full_chain[:,:,4] /= const.M_sun.value
 
                 np.save('%scorner_%s' %(self.outdir,self.outfilename), full_chain)
 
@@ -593,14 +528,11 @@ class mcmc_fit:
 
                 # Normalize the jerk results if needed
                 if self.options.jerkflag:
-                    full_chain[:,:,3] /= (1e6*const.M_sun.value)
                     full_chain[:,:,self.vmin_ind:self.vmax_ind] /= 1e3
 
                 # Normalize the blackhole results if needed
-                if self.options.bhflag and not self.options.jerkflag:
+                if self.options.bhflag:
                     full_chain[:,:,3] /= const.M_sun.value
-                elif self.options.bhflag and self.options.jerkflag:
-                    full_chain[:,:,4] /= const.M_sun.value
 
                 np.save('%sglide_%s' %(self.outdir,self.outfilename), full_chain)
 
@@ -633,16 +565,10 @@ class mcmc_fit:
                 elif ikey[1] == '\\':
                     key_order[2] = idx
                 elif ikey[1] == 'M':
-                    if ikey[8] == 't':
-                        key_order[3] = idx
-                    else:
-                        if self.options.jerkflag:
-                            key_order[4] = idx
-                        else:
-                            key_order[3] = idx
+                    key_order[3] = idx
                 elif ikey[1] == 'z':
-                    psr_name             = ikey.split('rm ')[-1].split('}')[0]
-                    psr_idx              = np.where(self.params.PSRNAME==psr_name)[0][0]
+                    psr_name                       = ikey.split('rm ')[-1].split('}')[0]
+                    psr_idx                        = np.where(self.params.PSRNAME==psr_name)[0][0]
                     key_order[self.nparam+psr_idx] = idx
                 elif ikey[1] == 'B':
                     key_order[self.bmin_ind+bidx]  = idx
@@ -856,8 +782,8 @@ def main():
     parser.add_option("--jerks", action="store_true", dest="jerkflag", default=False, help="Flag to analyze the jerks as well as the accelerations.")
     parser.add_option("--blackhole", action="store_true", dest="bhflag", default=False, help="Flag to fit for a central black hole.")
     parser.add_option("--cluster", action='store', type='string', dest="cluster", default='Ter5', help="Globular Cluster name. Default = Ter5")
-    parser.add_option("--init", type='string', dest="theta_init", default=np.asarray([9e5,.16,2.4,5e5,10]), action='callback', callback=optlist, \
-                      help="Initial Guesses for cluster params. [Density(Msun/pc^3),rc(pc),alpha,Mtot(Msun),Mbh(Msun)].")
+    parser.add_option("--init", type='string', dest="theta_init", default=np.asarray([9e5,.16,2.4,10]), action='callback', callback=optlist, \
+                      help="Initial Guesses for cluster params. [Density(Msun/pc^3),rc(pc),alpha,Mbh(Msun)].")
     parser.add_option("--dval", action="store", type="float", dest="dval", default=5900, help="Assumed distance to cluster.")
     parser.add_option("--bmin", action="store", type="float", dest="bmin", default=1e7, help="Minimum magnetic field strength to test for in Gauss.")
     parser.add_option("--bmax", action="store", type="float", dest="bmax", default=1e10, help="Maximum magnetic field strength to test for in Gauss.")
