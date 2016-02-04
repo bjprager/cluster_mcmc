@@ -56,7 +56,6 @@ def bh_influence(rho_c,rc,BHMass):
     Calculate the radius of influence and tidal radius for a central black hole.
     The tidal radius is calculated for a solar mass and solar radius star. 
     """
-
     numerator   = 3*BHMass
     denominator = 8*np.pi*rho_c*rc*rc
     r_influence = numerator/denominator
@@ -85,7 +84,7 @@ def model_accel_fnc(theta,r,l_values,jflag,bhflag):
         return -2.79e-10*rho_c*HYP2F1(1.5,.5*alpha,2.5,-r_rc**2)*l_values
     else:
         # Find radii and relevant indices
-        BHMass               = theta[3+jflag]
+        BHMass               = theta[3]
         r_tidal, r_influence = bh_influence(rho_c,rc,BHMass)
         r_influence_rc       = r_influence/rc
         rshift_rc            = (r-r_influence)/rc
@@ -137,61 +136,39 @@ def density_at_r(rho_c,r_rc,alpha):
     """ Return the density at a given location in the cluster. """
     return rho_c*(1+r_rc**2)**(-0.5*alpha)
 
-def log_jerk_mf_fnc(theta,r,vmin_ind,vmax_ind,j_measured,j_measured_var_div,bhflag):
-    """ Find the approximate jerk from the mean field. """
+def log_jerk_analytical(theta,r,vmin_ind,vmax_ind,j_measured,bhflag):
 
-    # Unpact values
+    # Unpack the values
     rho_c = theta[0]
     rc    = theta[1]
     alpha = theta[2]
+    vel   = np.fabs(theta[vmin_ind:vmax_ind])
+
+    # Scaled radius
     r_rc  = r/rc
 
     # Get the density at each pulsar
     if not bhflag:
-        rho_psr = density_at_r(rho_c,r_rc,alpha)
+        rho = density_at_r(rho_c,r_rc,alpha)
     else:
-        bh_ind               = 4
-        rho_psr              = np.zeros(r.size)
+        BHMass               = theta[3]
+        rho                  = np.zeros(r.size)
         r_tidal, r_influence = bh_influence(rho_c,rc,BHMass)
         rshift_rc            = (r-r_influence)/rc
         inds_king            = (r>r_influence)
         inds_bh              = np.invert(inds_king)
         normalization        = rho_c*(r_influence**1.55)
-        rho_psr[inds_king]   = density_at_r(rho_c,rshift_rc[inds_king],alpha)
-        rho_psr[inds_bh]     = normalization*r[inds+bh]**(-1.55)
+        rho[inds_king]       = density_at_r(rho_c,rshift_rc[inds_king],alpha)
+        rho[inds_bh]         = normalization*r[inds_bh]**(-1.55)
 
-    # Get the predicted mean field jerk
-    j_mf = 2.79e-10*rho_psr*theta[vmin_ind:vmax_ind]
+    # Get the characteristic jerk f0
+    f0   = 2.45e-10*rho*vel
 
-    return j_mf
+    # Get the likelihood
+    denom   = np.pi*(j_measured**2+f0**2)
+    loglike = np.sum(np.log(f0/denom))
 
-def log_jerk_neigh_fnc(theta,r,j_measured,jerk_mass_grid,jerk_rc_grid,neigh_jerk_lookup):
-    """ Find the approximate jerk from a neighboring star. """
-
-    # Unpack values
-    rho_c = theta[0]
-    rc    = theta[1]
-    rc_pc = 3.24e-17*rc
-    r_rc  = r/rc
-    Mtot  = 5e-31*theta[3]
-
-    # Derive the PDF
-    idx_M  = find_nearest_idx(jerk_mass_grid,Mtot)
-    idx_rc = find_nearest_idx(jerk_rc_grid,rc_pc)
-
-    if idx_M == -999 or idx_rc == -999:
-        return -np.inf
-
-    fits  = neigh_jerk_lookup[:,idx_M,idx_rc]
-    mu    = fits[0]*r_rc+fits[1]
-    sigma = fits[2]*r_rc+fits[3]
-
-    # Get the log likelihood for neighbors
-    jlog      = np.log(j_measured)
-    dJ        = jlog-mu
-    log_neigh = np.sum(-0.5*(dJ*dJ/(sigma*sigma))-jlog)
-
-    return log_neigh
+    return loglike 
 
 def log_likelihood(theta,args):
     """ Calculate the likelihood of our distributions. """
@@ -212,13 +189,10 @@ def log_likelihood(theta,args):
     lookup             = args[12]
     l_signs            = args[13]
     J_INDS             = args[14]
-    jerk_mass_grid     = args[15]
-    jerk_rc_grid       = args[16]
-    neigh_jerk_lookup  = args[17]
-    vmin_ind           = args[18]
-    vmax_ind           = args[19]
-    jflag              = args[20]
-    bhflag             = args[21]
+    vmin_ind           = args[15]
+    vmax_ind           = args[16]
+    jflag              = args[17]
+    bhflag             = args[18]
 
     # Calculate values
     l_values       = theta[zmin_ind:zmax_ind]
@@ -230,8 +204,7 @@ def log_likelihood(theta,args):
     log_l_pos      = log_l_pos_fnc(theta,rp_l_2,r,rc_grid,alpha_grid,lookup)
 
     if jflag:
-        j_mf     = log_jerk_mf_fnc(theta,r[J_INDS],vmin_ind,vmax_ind,j_measured,j_measured_var_div,bhflag)
-        log_jerk = log_jerk_neigh_fnc(theta,r[J_INDS],np.fabs(j_measured-j_mf),jerk_mass_grid,jerk_rc_grid,neigh_jerk_lookup)
+        log_jerk = log_jerk_analytical(theta,r[J_INDS],vmin_ind,vmax_ind,j_measured,bhflag)
     else:
         log_jerk = 0
 
@@ -240,10 +213,10 @@ def log_likelihood(theta,args):
 def log_prior(theta,args):
 
     # Unpack values
-    jflag  = args[20]
-    bhflag = args[21]
-    lb     = args[22]
-    ub     = args[23]
+    jflag  = args[17]
+    bhflag = args[18]
+    lb     = args[19]
+    ub     = args[20]
 
     # Calculate the priors
     log_prior = log_prior_fnc(theta,lb,ub)
@@ -251,11 +224,7 @@ def log_prior(theta,args):
     if not bhflag:
         return log_prior
     else:
-        if jflag:
-            bhmass = theta[4]
-        else:
-            bhmass = theta[3]
-
+        bhmass           = theta[3]
         log_bhmass_prior = -np.log(bhmass)
 
         return log_prior+log_bhmass_prior
